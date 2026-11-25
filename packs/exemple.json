@@ -1,0 +1,52 @@
+{
+ "format": "revisions-pack-1",
+ "title": "Exemple de pack",
+ "subject": {
+  "id": "eco",
+  "name": "Économie d'entreprise",
+  "short": "Éco",
+  "code": "EXEMPLE",
+  "color": "#b45309"
+ },
+ "chapters": [
+  {
+   "id": "e1",
+   "title": "Le marché",
+   "sub": "Offre et demande",
+   "simple": "<p class=\"lead\">Un marché, c'est la rencontre de l'offre et de la demande.</p>",
+   "html": "<h3>Définition</h3><p>Lieu de rencontre.</p>"
+  }
+ ],
+ "questions": [
+  {
+   "type": "qcm",
+   "chapter": "e1",
+   "q": "Un marché est…",
+   "options": [
+    "la rencontre de l'offre et de la demande",
+    "un magasin",
+    "une banque"
+   ],
+   "answer": 0,
+   "explanation": "Définition du cours."
+  },
+  {
+   "type": "list",
+   "chapter": "e1",
+   "q": "Citez les 2 acteurs d'un marché.",
+   "items": [
+    "Offreurs",
+    "Demandeurs"
+   ],
+   "need": 2,
+   "tip": "Qui vend, qui achète."
+  },
+  {
+   "type": "open",
+   "chapter": "e1",
+   "q": "Définissez le prix d'équilibre.",
+   "answer": "Le prix où l'offre égale la demande.",
+   "tip": "Croisement des courbes."
+  }
+ ]
+}

@@ -9,21 +9,37 @@ const ICON = {
   err:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v6M12 17h.01"/></svg>',
   star:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1L3.2 9.5l6.1-.9z"/></svg>',
   shuffle:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 3h5v5M4 20L21 3M21 16v5h-5M15 15l6 6M4 4l5 5"/></svg>',
+  user:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/></svg>',
+  cal:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg>',
   clock:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>'
 };
 
 // ---------- stockage (sur le téléphone) ----------
 const KEY = 'revisions-miage-v1';
-let store = { stats:{}, subject:'proba' };
-try { const raw = localStorage.getItem(KEY); if (raw) store = Object.assign(store, JSON.parse(raw)); } catch(e) {}
-const save = () => { try { localStorage.setItem(KEY, JSON.stringify(store)); } catch(e) {} };
+const lsGet = k => { try { return JSON.parse(localStorage.getItem(k)); } catch(e) { return null; } };
+const lsSet = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch(e) {} };
+// État de l'appareil (matière choisie, mode invité, dernier utilisateur, caches)
+let device = Object.assign({ subject:'proba', guest:false, user:null, exams:[], packs:[] }, lsGet(KEY + ':device') || {});
+const saveDevice = () => lsSet(KEY + ':device', device);
+// Progression : une par utilisateur (ou « invité »)
+let store = { stats:{}, pending:{} };
+function loadStore() {
+  const uid = device.user ? device.user.id : 'guest';
+  let s = lsGet(KEY + ':' + uid);
+  if (!s) { const old = lsGet(KEY); s = old && old.stats ? { stats: old.stats, pending: Object.assign({}, old.stats) } : null; } // reprise de l'ancienne version
+  store = Object.assign({ stats:{}, pending:{} }, s || {});
+  store.subject = device.subject;
+}
+const save = () => { lsSet(KEY + ':' + (device.user ? device.user.id : 'guest'), { stats: store.stats, pending: store.pending }); device.subject = store.subject; saveDevice(); };
+loadStore();
 
-const subj = () => SUBJECTS.find(s => s.id === store.subject);
+const subj = () => SUBJECTS.find(s => s.id === store.subject) || SUBJECTS[0];
 const qsOf = (sid) => QUESTIONS.filter(q => q.s === sid);
 const chapterOf = (q) => SUBJECTS.find(s => s.id === q.s).chapters.find(c => c.id === q.c);
 const shuffle = a => { a = a.slice(); for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
 const isMastered = id => { const s = store.stats[id]; return s && s.last === true; };
 const isWrong = id => { const s = store.stats[id]; return s && s.last === false; };
+const fmtErr = e => { const m = (e && (e.message || e.error_description)) || String(e); return /Invalid login/i.test(m) ? 'E-mail ou mot de passe incorrect.' : /already registered|already exists/i.test(m) ? 'Un compte existe déjà avec cet e-mail : connecte-toi.' : /Password should/i.test(m) ? 'Mot de passe trop court (6 caractères minimum).' : /Email not confirmed/i.test(m) ? 'Confirme ton e-mail (regarde ta boîte de réception), puis connecte-toi.' : /Failed to fetch|NetworkError|network/i.test(m) ? 'Pas de connexion internet.' : m; };
 
 // ---------- navigation ----------
 let view = { name:'home' }, history = [];
@@ -34,21 +50,81 @@ function setTop(title, showBack) {
   $('#title').textContent = title;
   $('#back').hidden = !showBack;
 }
+function paintSubject() {
+  const S = subj();
+  ['proba','ng','comm'].forEach(k => document.body.classList.toggle('s-' + k, S.id === k));
+  if (S.color) { document.body.style.setProperty('--accent', S.color); document.body.style.setProperty('--accent-soft', 'color-mix(in srgb, ' + S.color + ' 16%, var(--surface))'); }
+  else { document.body.style.removeProperty('--accent'); document.body.style.removeProperty('--accent-soft'); }
+}
 function render() {
-  document.body.classList.toggle('s-ng', store.subject === 'ng'); document.body.classList.toggle('s-comm', store.subject === 'comm');
-  document.querySelectorAll('.seg button').forEach(b => b.classList.toggle('on', b.dataset.s === store.subject));
-  const tabFor = { home:'home', courses:'courses', chapter:'courses', quizsetup:'quizsetup', quiz:'quizsetup', result:'quizsetup', errors:'errors' };
+  if (store.subject !== subj().id) store.subject = subj().id;
+  paintSubject();
+  const subjViews = ['subject','courses','chapter','quizsetup','quiz','result','errors'];
+  const chip = $('#subjchip');
+  chip.hidden = !subjViews.includes(view.name);
+  chip.querySelector('span').textContent = subj().short;
+  const tabFor = { home:'home', subject:'home', courses:'courses', chapter:'courses', quizsetup:'quizsetup', quiz:'quizsetup', result:'quizsetup', errors:'errors', account:'account', admin:'account' };
+  $('.tabs').hidden = view.name === 'auth';
   document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.v === tabFor[view.name]));
   const m = $('#main'); m.innerHTML = '';
-  ({ home:vHome, courses:vCourses, chapter:vChapter, quizsetup:vSetup, quiz:vQuiz, result:vResult, errors:vErrors })[view.name](m);
+  ({ auth:vAuth, home:vHome, subject:vSubject, courses:vCourses, chapter:vChapter, quizsetup:vSetup, quiz:vQuiz, result:vResult, errors:vErrors, account:vAccount, admin:vAdmin })[view.name](m);
 }
 
-// ---------- Accueil ----------
+// ---------- Accueil : choix de la matière + examens à venir ----------
+const DAY = 86400000;
+function daysUntil(d) { const t = new Date(); t.setHours(0,0,0,0); return Math.round((new Date(d + 'T00:00:00') - t) / DAY); }
+function whenLabel(n) { return n === 0 ? 'Aujourd\'hui' : n === 1 ? 'Demain' : 'Dans ' + n + ' jours'; }
+function frDate(d) { try { return new Date(d + 'T00:00:00').toLocaleDateString('fr-FR', { weekday:'long', day:'numeric', month:'long' }); } catch(e) { return d; } }
+function subjectProgress(S) { const qs = qsOf(S.id); const done = qs.filter(q => isMastered(q.id)).length; return { done, total: qs.length, pct: qs.length ? Math.round(100 * done / qs.length) : 0 }; }
+function chooseSubject(id) { store.subject = id; save(); history = []; go({ name:'subject' }, false); }
 function vHome(m) {
-  const S = subj(), qs = qsOf(S.id);
   setTop('Révisions', false);
+  const hello = el('h2', null, device.user && device.user.name ? 'Bonjour ' + device.user.name : 'Bonjour');
+  m.append(hello);
+  // Examens à venir
+  const ex = (device.exams || []).filter(e => daysUntil(e.exam_date) >= 0).sort((a, b) => a.exam_date.localeCompare(b.exam_date));
+  const eh = el('h3', 'sect', 'Examens à venir'); m.append(eh);
+  if (!ex.length) m.append(el('p', 'sub', Cloud.enabled() ? 'Aucun examen prévu pour l\'instant.' : 'Les examens à venir s\'afficheront ici une fois les comptes activés.'));
+  else {
+    const st = el('div', 'stack');
+    ex.forEach(e => {
+      const S = SUBJECTS.find(s => s.id === e.subject); const n = daysUntil(e.exam_date);
+      const b = el('button', 'row exam' + (n <= 3 ? ' soon' : ''));
+      b.innerHTML = '<div class="when"><b></b><span></span></div><div class="t"><b></b><span></span></div><div class="chev">›</div>';
+      b.querySelector('.when b').textContent = n === 0 ? 'J' : n === 1 ? 'J-1' : 'J-' + n;
+      b.querySelector('.when span').textContent = whenLabel(n);
+      b.querySelector('.t b').textContent = e.title + (S ? ' · ' + S.short : '');
+      b.querySelector('.t span').textContent = frDate(e.exam_date) + (e.details ? ' — ' + e.details : '');
+      b.onclick = () => { if (S) chooseSubject(S.id); };
+      st.append(b);
+    });
+    m.append(st);
+  }
+  // Matières
+  m.append(el('h3', 'sect', 'Choisis ta matière'));
+  const g = el('div', 'subjects');
+  SUBJECTS.forEach(S => {
+    const p = subjectProgress(S);
+    const b = el('button', 'subj s-' + S.id);
+    if (S.color) b.style.setProperty('--accent', S.color);
+    b.innerHTML = '<span class="code"></span><b></b><span class="meta"></span><div class="bar dk"><i></i></div>';
+    b.querySelector('.code').textContent = S.code || S.short;
+    b.querySelector('b').textContent = S.name;
+    b.querySelector('.meta').textContent = S.chapters.length + ' chapitres · ' + p.total + ' questions · ' + p.pct + ' %';
+    b.querySelector('.bar i').style.width = p.pct + '%';
+    b.onclick = () => chooseSubject(S.id);
+    g.append(b);
+  });
+  m.append(g);
+  const inst = el('div', 'card install'); inst.style.marginTop = '22px';
+  inst.innerHTML = '<b>Réviser hors ligne</b><p style="margin:6px 0 0">Installe l\'app <b>avec internet</b> : Safari → Partager → <b>Sur l\'écran d\'accueil</b>. Ouvre-la une fois, puis elle marche en mode avion. Ta progression se synchronise dès que tu retrouves du réseau.</p>';
+  m.append(inst);
+}
+function vSubject(m) {
+  const S = subj(), qs = qsOf(S.id);
+  setTop(S.name, true);
   const done = qs.filter(q => isMastered(q.id)).length;
-  const pct = Math.round(100 * done / qs.length);
+  const pct = qs.length ? Math.round(100 * done / qs.length) : 0;
   const hero = el('div', 'card hero');
   hero.innerHTML = '<div class="k"></div><div class="big"></div><div class="lab"></div><div class="bar"><i></i></div>';
   hero.querySelector('.k').textContent = S.code + ' · ' + S.name;
@@ -62,7 +138,7 @@ function vHome(m) {
   const tile = (ic, t, s, fn) => { const b = el('button', 'tile'); b.innerHTML = '<div class="ic">' + ICON[ic] + '</div><b></b><span></span>'; b.querySelector('b').textContent = t; b.querySelector('span').textContent = s; b.onclick = fn; return b; };
   g.append(
     tile('book', 'Comprendre le cours', S.chapters.length + ' chapitres expliqués', () => go({ name:'courses' })),
-    tile('star', 'Questions du prof', prof + ' questions expliquées', () => startQuiz({ prof:'only' }, 'Questions du prof')),
+    prof ? tile('star', 'Questions du prof', prof + ' questions expliquées', () => startQuiz({ prof:'only' }, 'Questions du prof')) : tile('quiz', 'Tout réviser', qs.length + ' questions', () => startQuiz({}, 'Toutes les questions')),
     tile('shuffle', 'Mélange rapide', '10 questions au hasard', () => startQuiz({ n:10, chapter:defChap() }, 'Mélange rapide')),
     tile('clock', S.id === 'comm' ? 'Contrôle blanc' : 'Examen blanc', S.id === 'comm' ? '20 cartes « Citez… » du 2ᵉ contrôle' : '20 questions, correction à la fin', () => startQuiz({ n:20, exam:true, chapter:defChap() }, S.id === 'comm' ? 'Contrôle blanc' : 'Examen blanc')),
   );
@@ -88,9 +164,6 @@ function vHome(m) {
   });
   m.append(st);
 
-  const inst = el('div', 'card install'); inst.style.marginTop = '22px';
-  inst.innerHTML = '<b>Pour l\'avion</b><p style="margin:6px 0 0">Ta progression est enregistrée sur ce téléphone. Installe l\'app <b>avant</b> de partir (avec internet) :</p><ol><li>Ouvre le lien dans <b>Safari</b>.</li><li>Bouton Partager → <b>Sur l\'écran d\'accueil</b>.</li><li>Ouvre l\'app une fois depuis l\'icône, puis passe en mode avion pour vérifier.</li></ol>';
-  m.append(inst);
 }
 
 // ---------- Cours ----------
@@ -203,7 +276,7 @@ function startQuiz(o, title) {
 }
 function record(q, ok) { if (typeof ok !== 'boolean') return;
   const s = store.stats[q.id] || { ok:0, ko:0 };
-  ok ? s.ok++ : s.ko++; s.last = ok; store.stats[q.id] = s; save();
+  ok ? s.ok++ : s.ko++; s.last = ok; s.t = Date.now(); store.stats[q.id] = s; store.pending[q.id] = 1; save(); syncSoon();
 }
 function vQuiz(m) {
   if (quiz.items[quiz.i].q.t) return vCard(m);
@@ -361,16 +434,198 @@ function vErrors(m) {
   let armed = false;
   reset.onclick = () => {
     if (!armed) { armed = true; reset.textContent = 'Appuie encore pour confirmer'; return; }
-    qsOf(store.subject).forEach(q => delete store.stats[q.id]); save(); render();
+    qsOf(store.subject).forEach(q => { if (store.stats[q.id]) { store.stats[q.id] = { ok:0, ko:0, last:null, t:Date.now() }; store.pending[q.id] = 1; } }); save(); syncSoon(); render();
   };
   m.append(reset);
 }
 
+// ---------- Synchronisation ----------
+let syncTimer = null, syncing = false;
+function syncSoon() { clearTimeout(syncTimer); syncTimer = setTimeout(sync, 1500); }
+async function sync() {
+  if (syncing || !device.user || !Cloud.enabled() || !Cloud.online()) return;
+  const ids = Object.keys(store.pending); if (!ids.length) return;
+  syncing = true;
+  const rows = ids.filter(id => store.stats[id]).map(id => { const s = store.stats[id]; return { qid:id, ok:s.ok || 0, ko:s.ko || 0, last:s.last == null ? null : s.last, updated_at:new Date(s.t || Date.now()).toISOString() }; });
+  const done = await Cloud.pushProgress(device.user.id, rows);
+  if (done) { ids.forEach(id => delete store.pending[id]); save(); }
+  syncing = false;
+}
+async function pull() {
+  if (!device.user || !Cloud.enabled() || !Cloud.online()) return;
+  const rows = await Cloud.pullProgress(device.user.id); if (!rows) return;
+  rows.forEach(r => { const t = Date.parse(r.updated_at) || 0, l = store.stats[r.qid]; if (!l || (l.t || 0) < t) { store.stats[r.qid] = { ok:r.ok, ko:r.ko, last:r.last, t }; delete store.pending[r.qid]; } });
+  save(); sync();
+}
+async function refreshShared() {
+  if (!Cloud.enabled() || !Cloud.online()) return;
+  const [ex, pk] = await Promise.all([Cloud.exams(), Cloud.packs(false)]);
+  let changed = false;
+  if (ex) { device.exams = ex; changed = true; }
+  if (pk && JSON.stringify(pk.map(p => [p.id, p.created_at])) !== JSON.stringify((device.packs || []).map(p => [p.id, p.created_at]))) { device.packs = pk; saveDevice(); location.reload(); return; }
+  if (changed) { saveDevice(); if (['home','admin'].includes(view.name)) render(); }
+}
+async function setUserFromSession(s) {
+  if (!s) return;
+  const p = await Cloud.profile(s.user.id);
+  const name = p.name || (s.user.user_metadata && s.user.user_metadata.display_name) || s.user.email.split('@')[0];
+  const changedUser = !device.user || device.user.id !== s.user.id;
+  device.user = { id:s.user.id, email:s.user.email, name, admin:p.admin }; device.guest = false; saveDevice();
+  if (changedUser) loadStore();
+  await pull();
+}
+
+// ---------- Compte ----------
+function vAuth(m) {
+  setTop('Révisions', false);
+  const mode = view.mode || 'login';
+  const c = el('div', 'card stack authcard');
+  c.append(el('h2', null, mode === 'login' ? 'Connexion' : 'Créer un compte'));
+  c.append(el('p', 'sub', 'Ton compte garde ta progression et la synchronise entre ton téléphone et ton ordinateur.'));
+  const f = el('form', 'stack');
+  const field = (id, label, type, ac) => { const w = el('div'); const l = el('label', 'lbl', label); l.htmlFor = id; const i = el('input', 'inp'); i.id = id; i.type = type; i.autocomplete = ac; i.required = true; w.append(l, i); f.append(w); return i; };
+  const name = mode === 'signup' ? field('su-name', 'Prénom', 'text', 'given-name') : null;
+  const email = field(mode + '-email', 'E-mail', 'email', 'email');
+  const pass = field(mode + '-pass', 'Mot de passe (6 caractères minimum)', 'password', mode === 'login' ? 'current-password' : 'new-password');
+  const msg = el('p', 'formmsg'); msg.hidden = true;
+  const sub = el('button', 'btn', mode === 'login' ? 'Se connecter' : 'Créer mon compte'); sub.type = 'submit';
+  f.append(msg, sub);
+  f.onsubmit = async (ev) => {
+    ev.preventDefault(); msg.hidden = true; sub.disabled = true; sub.textContent = 'Un instant…';
+    try {
+      if (mode === 'signup') {
+        const d = await Cloud.signUp(email.value.trim(), pass.value, name.value.trim());
+        if (!d.session) { msg.className = 'formmsg good'; msg.textContent = 'Compte créé. Ouvre l\'e-mail de confirmation reçu, puis reviens te connecter.'; msg.hidden = false; sub.disabled = false; sub.textContent = 'Créer mon compte'; view.mode = 'login'; return; }
+        await setUserFromSession(d.session);
+      } else { const d = await Cloud.signIn(email.value.trim(), pass.value); await setUserFromSession(d.session); }
+      history = []; go({ name:'home' }, false); refreshShared();
+    } catch (e) { msg.className = 'formmsg bad'; msg.textContent = fmtErr(e); msg.hidden = false; sub.disabled = false; sub.textContent = mode === 'login' ? 'Se connecter' : 'Créer mon compte'; }
+  };
+  c.append(f);
+  const sw = el('button', 'link', mode === 'login' ? 'Pas encore de compte ? Créer un compte' : 'Déjà un compte ? Se connecter');
+  sw.onclick = () => { view.mode = mode === 'login' ? 'signup' : 'login'; render(); };
+  c.append(sw);
+  m.append(c);
+  const g = el('button', 'btn ghost', 'Continuer sans compte'); g.style.marginTop = '12px';
+  g.onclick = () => { device.guest = true; saveDevice(); history = []; go({ name:'home' }, false); };
+  m.append(g);
+  m.append(el('p', 'sub center', 'Sans compte, ta progression reste seulement sur cet appareil.'));
+}
+function vAccount(m) {
+  setTop('Mon compte', false);
+  const c = el('div', 'card stack');
+  if (device.user) {
+    c.append(el('h2', null, device.user.name));
+    c.append(el('p', 'sub', device.user.email + (device.user.admin ? ' · administratrice' : '')));
+    const pend = Object.keys(store.pending).length;
+    c.append(el('p', 'sub', !Cloud.online() ? 'Hors ligne : ta progression sera envoyée au retour du réseau.' : pend ? pend + ' réponse(s) en attente d\'envoi…' : 'Progression synchronisée.'));
+    if (device.user.admin) { const a = el('button', 'btn', 'Espace admin'); a.onclick = () => go({ name:'admin', tab:'exams' }); c.append(a); }
+    const o = el('button', 'btn ghost', 'Se déconnecter');
+    o.onclick = async () => { await sync(); await Cloud.signOut(); device.user = null; device.guest = false; saveDevice(); loadStore(); history = []; go({ name: Cloud.enabled() ? 'auth' : 'home' }, false); };
+    c.append(o);
+  } else {
+    c.append(el('h2', null, 'Mode invité'));
+    c.append(el('p', 'sub', 'Ta progression est enregistrée sur cet appareil uniquement.'));
+    if (Cloud.enabled()) { const b = el('button', 'btn', 'Se connecter ou créer un compte'); b.onclick = () => go({ name:'auth', mode:'login' }, false); c.append(b); }
+    else c.append(el('p', 'sub', 'Les comptes ne sont pas encore activés dans cette version.'));
+  }
+  m.append(c);
+  m.append(el('h3', 'sect', 'Ma progression'));
+  const st = el('div', 'stack');
+  SUBJECTS.forEach(S => { const p = subjectProgress(S); const r = el('button', 'row'); r.innerHTML = '<div class="n"></div><div class="t"><b></b><span></span><div class="bar dk"><i></i></div></div><div class="chev">›</div>'; if (S.color) r.style.setProperty('--accent', S.color); r.classList.add('s-' + S.id); r.querySelector('.n').textContent = p.pct + '%'; r.querySelector('b').textContent = S.name; r.querySelector('span').textContent = p.done + ' / ' + p.total + ' questions réussies'; r.querySelector('.bar i').style.width = p.pct + '%'; r.onclick = () => chooseSubject(S.id); st.append(r); });
+  m.append(st);
+}
+
+// ---------- Admin ----------
+function vAdmin(m) {
+  setTop('Espace admin', true);
+  if (!device.user || !device.user.admin) { m.append(el('div', 'empty', 'Réservé à l\'administratrice.')); return; }
+  if (!Cloud.online()) m.append(el('p', 'formmsg bad', 'Hors ligne : l\'espace admin a besoin d\'internet.'));
+  const tabs = el('div', 'ctabs');
+  [['exams', 'Examens'], ['content', 'Contenu'], ['members', 'Membres']].forEach(([k, t]) => { const b = el('button', view.tab === k ? 'on' : '', t); b.onclick = () => { view.tab = k; render(); }; tabs.append(b); });
+  m.append(tabs);
+  ({ exams:adminExams, content:adminContent, members:adminMembers })[view.tab || 'exams'](m);
+}
+function msgBox() { const p = el('p', 'formmsg'); p.hidden = true; p.show = (t, good) => { p.textContent = t; p.className = 'formmsg ' + (good ? 'good' : 'bad'); p.hidden = false; }; return p; }
+function adminExams(m) {
+  const f = el('form', 'card stack');
+  f.append(el('b', null, 'Ajouter un examen'));
+  const sel = el('select', 'inp'); sel.id = 'ex-subject'; SUBJECTS.forEach(S => { const o = el('option', null, S.name); o.value = S.id; if (S.id === store.subject) o.selected = true; sel.append(o); });
+  const title = el('input', 'inp'); title.id = 'ex-title'; title.placeholder = 'Ex. : 2ᵉ contrôle, partiel…'; title.required = true;
+  const date = el('input', 'inp'); date.id = 'ex-date'; date.type = 'date'; date.required = true;
+  const det = el('input', 'inp'); det.id = 'ex-details'; det.placeholder = 'Détails (chapitres, salle, durée…) — facultatif';
+  [['Matière', sel], ['Intitulé', title], ['Date', date], ['Détails', det]].forEach(([l, i]) => { const w = el('div'); const lab = el('label', 'lbl', l); lab.htmlFor = i.id; w.append(lab, i); f.append(w); });
+  const msg = msgBox(); const b = el('button', 'btn', 'Ajouter'); b.type = 'submit'; f.append(msg, b);
+  f.onsubmit = async ev => { ev.preventDefault(); b.disabled = true; try { await Cloud.addExam({ subject:sel.value, title:title.value.trim(), exam_date:date.value, details:det.value.trim() || null }); await refreshShared(); render(); } catch (e) { msg.show(fmtErr(e)); b.disabled = false; } };
+  m.append(f);
+  m.append(el('h3', 'sect', 'Examens enregistrés'));
+  const list = (device.exams || []).slice().sort((a, b) => a.exam_date.localeCompare(b.exam_date));
+  if (!list.length) m.append(el('p', 'sub', 'Aucun examen.'));
+  const st = el('div', 'stack');
+  list.forEach(e => { const d = el('div', 'card arow'); const S = SUBJECTS.find(s => s.id === e.subject); const t = el('div', 't'); t.append(el('b', null, e.title + (S ? ' · ' + S.short : ''))); t.append(el('span', 'sub', frDate(e.exam_date) + (daysUntil(e.exam_date) < 0 ? ' (passé)' : ''))); const x = el('button', 'btn ghost small', 'Supprimer'); let armed = false; x.onclick = async () => { if (!armed) { armed = true; x.textContent = 'Confirmer'; return; } try { await Cloud.delExam(e.id); await refreshShared(); render(); } catch (er) { x.textContent = 'Erreur'; } }; d.append(t, x); st.append(d); });
+  m.append(st);
+}
+async function adminContent(m) {
+  const how = el('div', 'card stack');
+  how.innerHTML = '<b>Ajouter un cours</b><ol class="steps"><li>Envoie tes fichiers de cours (Word, PDF, photos) et tes QCM à Claude dans ta conversation de révision.</li><li>Claude te renvoie un fichier <b>pack .json</b> avec les résumés, les explications et les questions.</li><li>Importe ce fichier ici : le contenu apparaît dans l\'app de toute la classe, même hors ligne une fois chargé.</li></ol>';
+  m.append(how);
+  const f = el('div', 'card stack');
+  const lab = el('label', 'lbl', 'Fichier pack (.json)'); const inp = el('input', 'inp'); inp.type = 'file'; inp.accept = '.json,application/json'; inp.id = 'pack-file'; lab.htmlFor = 'pack-file';
+  const prev = el('div'); const msg = msgBox(); const pub = el('button', 'btn', 'Publier pour la classe'); pub.disabled = true;
+  let pack = null;
+  inp.onchange = async () => {
+    msg.hidden = true; prev.innerHTML = ''; pub.disabled = true; pack = null;
+    const file = inp.files[0]; if (!file) return;
+    try { pack = JSON.parse(await file.text()); } catch (e) { msg.show('Ce fichier n\'est pas un JSON valide.'); return; }
+    const v = Packs.validate(pack);
+    if (!v.ok) { msg.show('Pack refusé : ' + v.errors.join(' · ')); pack = null; return; }
+    const s = v.summary; prev.append(el('p', 'formmsg good', s.subject + ' : ' + s.chapters + ' chapitres, ' + s.questions + ' questions (' + s.counts.qcm + ' QCM, ' + s.counts.list + ' « Citez », ' + s.counts.open + ' ouvertes).'));
+    pub.disabled = false;
+  };
+  pub.onclick = async () => { if (!pack) return; pub.disabled = true; pub.textContent = 'Publication…'; try { await Cloud.addPack({ subject:pack.subject.id, title:pack.title || pack.subject.name, content:pack, active:true }); msg.show('Publié. L\'app va se recharger.', true); setTimeout(refreshShared, 600); } catch (e) { msg.show(fmtErr(e)); pub.disabled = false; pub.textContent = 'Publier pour la classe'; } };
+  f.append(lab, inp, prev, msg, pub);
+  m.append(f);
+  m.append(el('h3', 'sect', 'Packs publiés'));
+  const holder = el('div', 'stack'); holder.append(el('p', 'sub', 'Chargement…')); m.append(holder);
+  const all = await Cloud.packs(true);
+  holder.innerHTML = '';
+  if (!all) { holder.append(el('p', 'sub', 'Impossible de charger la liste (connexion ?).')); return; }
+  if (!all.length) holder.append(el('p', 'sub', 'Aucun pack publié. Les matières de base (Proba, Angular, Comm) sont intégrées à l\'app.'));
+  all.forEach(p => {
+    const d = el('div', 'card arow'); const t = el('div', 't'); t.append(el('b', null, p.title || p.subject)); const c = p.content || {}; t.append(el('span', 'sub', (c.chapters || []).length + ' chapitres · ' + (c.questions || []).length + ' questions · ' + (p.active ? 'visible' : 'masqué')));
+    const tg = el('button', 'btn ghost small', p.active ? 'Masquer' : 'Afficher'); tg.onclick = async () => { await Cloud.setPackActive(p.id, !p.active); refreshShared(); render(); };
+    const x = el('button', 'btn ghost small', 'Supprimer'); let armed = false; x.onclick = async () => { if (!armed) { armed = true; x.textContent = 'Confirmer'; return; } await Cloud.delPack(p.id); refreshShared(); render(); };
+    const btns = el('div', 'btnrow'); btns.append(tg, x); d.append(t, btns); holder.append(d);
+  });
+}
+async function adminMembers(m) {
+  const holder = el('div', 'stack'); holder.append(el('p', 'sub', 'Chargement…')); m.append(holder);
+  const data = await Cloud.members(); holder.innerHTML = '';
+  if (!data) { holder.append(el('p', 'sub', 'Impossible de charger les membres (connexion ?).')); return; }
+  holder.append(el('p', 'sub', data.profiles.length + ' membre(s) inscrit(s).'));
+  data.profiles.forEach(pf => {
+    const mine = data.progress.filter(r => r.user_id === pf.id); const okN = mine.filter(r => r.last === true).length;
+    const last = mine.reduce((a, r) => r.updated_at > a ? r.updated_at : a, '');
+    const d = el('div', 'card arow'); const t = el('div', 't'); t.append(el('b', null, pf.display_name || 'Sans nom')); t.append(el('span', 'sub', okN + ' questions réussies · ' + mine.length + ' tentées' + (last ? ' · actif le ' + new Date(last).toLocaleDateString('fr-FR') : '')));
+    d.append(t); holder.append(d);
+  });
+}
+
 // ---------- démarrage ----------
 $('#back').onclick = back;
-document.querySelectorAll('.seg button').forEach(b => b.onclick = () => { store.subject = b.dataset.s; save(); history = []; view = { name: view.name === 'chapter' ? 'courses' : (['quiz','result'].includes(view.name) ? 'home' : view.name) }; render(); });
+$('#subjchip').onclick = () => { history = []; go({ name:'home' }, false); };
 document.querySelectorAll('.tabs button').forEach(b => { b.querySelector('i').outerHTML = ICON[b.dataset.icon]; b.onclick = () => { history = []; go({ name:b.dataset.v }, false); }; });
+(device.packs || []).forEach(p => { try { Packs.apply(p); } catch(e) {} });
+view = { name: (Cloud.enabled() && !device.user && !device.guest) ? 'auth' : 'home' };
 render();
+(async () => {
+  if (!Cloud.enabled()) return;
+  const s = await Cloud.session();
+  if (s) { await setUserFromSession(s); if (view.name === 'auth') { history = []; view = { name:'home' }; } render(); }
+  refreshShared();
+})();
+window.addEventListener('online', () => { sync(); refreshShared(); });
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') sync(); });
 if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol) && !/claude/.test(location.hostname)) {
   try { navigator.serviceWorker.register('sw.js').catch(() => {}); } catch(e) {}
 }

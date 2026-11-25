@@ -1,6 +1,6 @@
 import os, json
 src = os.path.dirname(os.path.abspath(__file__)) + '/src'
-order = ['data.js','cours_proba.js','simple_proba.js','qcm_proba.js','notes_proba.js','cours_angular.js','simple_angular.js','qcm_angular.js','cours_comm.js','simple_comm.js','qcm_comm.js','finalize.js','app.js']
+order = ['config.js','cloud.js','packs.js','data.js','cours_proba.js','simple_proba.js','qcm_proba.js','notes_proba.js','cours_angular.js','simple_angular.js','qcm_angular.js','cours_comm.js','simple_comm.js','qcm_comm.js','finalize.js','app.js']
 js = '\n'.join(open(os.path.join(src,f)).read() for f in order)
 css = open(os.path.join(src,'app.css')).read()
 tpl = open(os.path.join(src,'template.html')).read()
@@ -17,5 +17,9 @@ head = '''<!doctype html><html lang="fr"><head><meta charset="utf-8">
 <style>:root{padding-top:env(safe-area-inset-top);padding-bottom:0}</style>
 </head><body>'''
 pwa = os.path.join(out,'pwa'); os.makedirs(pwa, exist_ok=True)
-open(os.path.join(pwa,'index.html'),'w').write(head + body.replace('<meta name="claude:viewport-fit-sides" content="cover">','') + '</body></html>')
+import shutil
+os.makedirs(os.path.join(pwa,'vendor'), exist_ok=True)
+shutil.copy(os.path.join(src,'vendor','supabase.js'), os.path.join(pwa,'vendor','supabase.js'))
+pbody = body.replace('<meta name="claude:viewport-fit-sides" content="cover">','').replace('<script>', '<script src="vendor/supabase.js"></script>\n<script>', 1)
+open(os.path.join(pwa,'index.html'),'w').write(head + pbody + '</body></html>')
 print(len(body))
