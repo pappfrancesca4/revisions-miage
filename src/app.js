@@ -39,7 +39,7 @@ const chapterOf = (q) => SUBJECTS.find(s => s.id === q.s).chapters.find(c => c.i
 const shuffle = a => { a = a.slice(); for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
 const isMastered = id => { const s = store.stats[id]; return s && s.last === true; };
 const isWrong = id => { const s = store.stats[id]; return s && s.last === false; };
-const fmtErr = e => { const m = (e && (e.message || e.error_description)) || String(e); return /Invalid login/i.test(m) ? 'E-mail ou mot de passe incorrect.' : /already registered|already exists/i.test(m) ? 'Un compte existe déjà avec cet e-mail : connecte-toi.' : /Password should/i.test(m) ? 'Mot de passe trop court (6 caractères minimum).' : /Email not confirmed/i.test(m) ? 'Confirme ton e-mail (regarde ta boîte de réception), puis connecte-toi.' : /Failed to fetch|NetworkError|network/i.test(m) ? 'Pas de connexion internet.' : m; };
+const fmtErr = e => { const m = (e && (e.message || e.error_description)) || String(e); return /Invalid login/i.test(m) ? 'E-mail ou mot de passe incorrect.' : /already registered|already exists/i.test(m) ? 'Un compte existe déjà avec cet e-mail : connecte-toi.' : /Password should/i.test(m) ? 'Mot de passe trop court (6 caractères minimum).' : /Email not confirmed/i.test(m) ? 'Confirme ton e-mail (regarde ta boîte de réception), puis connecte-toi.' : /Failed to fetch|NetworkError|network/i.test(m) ? 'Pas de connexion internet.' : /row-level security|violates row/i.test(m) ? 'Supabase refuse : ton compte n\'est pas encore administrateur (exécute la ligne « insert into public.admins… » dans le SQL Editor).' : /permission denied/i.test(m) ? 'Supabase refuse l\'accès aux tables : exécute le fichier supabase/grants.sql dans le SQL Editor.' : m; };
 
 // ---------- navigation ----------
 let view = { name:'home' }, history = [];
@@ -76,6 +76,12 @@ function daysUntil(d) { const t = new Date(); t.setHours(0,0,0,0); return Math.r
 function whenLabel(n) { return n === 0 ? 'Aujourd\'hui' : n === 1 ? 'Demain' : 'Dans ' + n + ' jours'; }
 function frDate(d) { try { return new Date(d + 'T00:00:00').toLocaleDateString('fr-FR', { weekday:'long', day:'numeric', month:'long' }); } catch(e) { return d; } }
 function subjectProgress(S) { const qs = qsOf(S.id); const done = qs.filter(q => isMastered(q.id)).length; return { done, total: qs.length, pct: qs.length ? Math.round(100 * done / qs.length) : 0 }; }
+function subjectFor(key) {
+  if (!key) return null; const k = norm(key).trim();
+  return SUBJECTS.find(S => S.id === key) || SUBJECTS.find(S => [S.name, S.short, S.code].some(x => x && norm(x).trim() === k)) || null;
+}
+function hasContent(S) { return !!S && qsOf(S.id).length > 0; }
+function examSubjectName(e) { const S = subjectFor(e.subject); return S ? S.name : e.subject; }
 function chooseSubject(id) { store.subject = id; save(); history = []; go({ name:'subject' }, false); }
 function vHome(m) {
   setTop('Révisions', false);
@@ -86,16 +92,24 @@ function vHome(m) {
   const eh = el('h3', 'sect', 'Examens à venir'); m.append(eh);
   if (!ex.length) m.append(el('p', 'sub', Cloud.enabled() ? 'Aucun examen prévu pour l\'instant.' : 'Les examens à venir s\'afficheront ici une fois les comptes activés.'));
   else {
+    const missing = ex.filter(e => !hasContent(subjectFor(e.subject)));
+    if (missing.length && device.user && device.user.admin) {
+      const w = el('div', 'card warnbox stack');
+      w.append(el('b', null, 'À préparer avant l\'examen'));
+      missing.forEach(e => w.append(el('p', null, examSubjectName(e) + ' (' + whenLabel(daysUntil(e.exam_date)).toLowerCase() + ') : aucun contenu de révision. Envoie les cours et les QCM à Claude pour l\'ajouter à l\'app.')));
+      m.append(w);
+    }
     const st = el('div', 'stack');
     ex.forEach(e => {
-      const S = SUBJECTS.find(s => s.id === e.subject); const n = daysUntil(e.exam_date);
+      const S = subjectFor(e.subject), has = hasContent(S), n = daysUntil(e.exam_date);
       const b = el('button', 'row exam' + (n <= 3 ? ' soon' : ''));
       b.innerHTML = '<div class="when"><b></b><span></span></div><div class="t"><b></b><span></span></div><div class="chev">›</div>';
       b.querySelector('.when b').textContent = n === 0 ? 'J' : n === 1 ? 'J-1' : 'J-' + n;
       b.querySelector('.when span').textContent = whenLabel(n);
-      b.querySelector('.t b').textContent = e.title + (S ? ' · ' + S.short : '');
-      b.querySelector('.t span').textContent = frDate(e.exam_date) + (e.details ? ' — ' + e.details : '');
-      b.onclick = () => { if (S) chooseSubject(S.id); };
+      b.querySelector('.t b').textContent = examSubjectName(e);
+      b.querySelector('.t span').textContent = (norm(e.title) !== norm(examSubjectName(e)) ? e.title + ' · ' : '') + frDate(e.exam_date) + (e.details ? ' — ' + e.details : '');
+      if (!has) { b.querySelector('.t').append(el('span', 'pill warn', 'Pas encore de contenu')); b.querySelector('.chev').textContent = ''; }
+      b.onclick = () => { if (has) chooseSubject(S.id); else if (device.user && device.user.admin) go({ name:'admin', tab:'content' }); };
       st.append(b);
     });
     m.append(st);
@@ -547,23 +561,32 @@ function vAdmin(m) {
   ({ exams:adminExams, content:adminContent, members:adminMembers })[view.tab || 'exams'](m);
 }
 function msgBox() { const p = el('p', 'formmsg'); p.hidden = true; p.show = (t, good) => { p.textContent = t; p.className = 'formmsg ' + (good ? 'good' : 'bad'); p.hidden = false; }; return p; }
+function subjDatalist() { let d = document.getElementById('subj-names'); if (d) d.remove(); d = el('datalist'); d.id = 'subj-names'; SUBJECTS.forEach(S => { const o = el('option'); o.value = S.name; d.append(o); }); return d; }
+function subjectKey(name) { const S = subjectFor(name); return S ? S.id : name.trim(); }
+const EXAM_G = new RegExp('(examen|exam\\b|contr[oô]le|partiel|\\bds\\b|\\bcc\\b|[ée]valuation|\\bqcm\\b|\\btest\\b|soutenance|\\boral\\b|rattrapage|interro|terminal|final|finale|blanc)', 'gi');
+function cleanSubject(title) {
+  let t = (title || '').replace(EXAM_G, ' ').replace(/(^|\s)(\d+\s*(er|re|e|ème|eme|ᵉ|ère)?|n°\s*\d+)(?=\s|$|[-–—:·|,])/gi, ' ');
+  t = t.replace(/\s+/g, ' ').replace(/^[\s\-–—:·|,\/()]+|[\s\-–—:·|,\/()]+$/g, '').replace(/^(de|du|des|d'|en|sur)\s+/i, '').trim();
+  return t || (title || '').trim();
+}
 function adminExams(m) {
   const f = el('form', 'card stack');
   f.append(el('b', null, 'Ajouter un examen'));
-  const sel = el('select', 'inp'); sel.id = 'ex-subject'; SUBJECTS.forEach(S => { const o = el('option', null, S.name); o.value = S.id; if (S.id === store.subject) o.selected = true; sel.append(o); });
+  const sel = el('input', 'inp'); sel.id = 'ex-subject'; sel.required = true; sel.setAttribute('list', 'subj-names'); sel.placeholder = 'Nom de la matière'; sel.value = subj().name;
+  f.append(subjDatalist());
   const title = el('input', 'inp'); title.id = 'ex-title'; title.placeholder = 'Ex. : 2ᵉ contrôle, partiel…'; title.required = true;
   const date = el('input', 'inp'); date.id = 'ex-date'; date.type = 'date'; date.required = true;
   const det = el('input', 'inp'); det.id = 'ex-details'; det.placeholder = 'Détails (chapitres, salle, durée…) — facultatif';
   [['Matière', sel], ['Intitulé', title], ['Date', date], ['Détails', det]].forEach(([l, i]) => { const w = el('div'); const lab = el('label', 'lbl', l); lab.htmlFor = i.id; w.append(lab, i); f.append(w); });
   const msg = msgBox(); const b = el('button', 'btn', 'Ajouter'); b.type = 'submit'; f.append(msg, b);
-  f.onsubmit = async ev => { ev.preventDefault(); b.disabled = true; try { await Cloud.addExam({ subject:sel.value, title:title.value.trim(), exam_date:date.value, details:det.value.trim() || null }); await refreshShared(); render(); } catch (e) { msg.show(fmtErr(e)); b.disabled = false; } };
+  f.onsubmit = async ev => { ev.preventDefault(); b.disabled = true; try { await Cloud.addExam({ subject:subjectKey(sel.value), title:title.value.trim(), exam_date:date.value, details:det.value.trim() || null }); await refreshShared(); render(); } catch (e) { msg.show(fmtErr(e)); b.disabled = false; } };
   m.append(f);
   m.append(calendarImport());
   m.append(el('h3', 'sect', 'Examens enregistrés'));
   const list = (device.exams || []).slice().sort((a, b) => a.exam_date.localeCompare(b.exam_date));
   if (!list.length) m.append(el('p', 'sub', 'Aucun examen.'));
   const st = el('div', 'stack');
-  list.forEach(e => { const d = el('div', 'card arow'); const S = SUBJECTS.find(s => s.id === e.subject); const t = el('div', 't'); t.append(el('b', null, e.title + (S ? ' · ' + S.short : ''))); t.append(el('span', 'sub', frDate(e.exam_date) + (daysUntil(e.exam_date) < 0 ? ' (passé)' : ''))); const x = el('button', 'btn ghost small', 'Supprimer'); let armed = false; x.onclick = async () => { if (!armed) { armed = true; x.textContent = 'Confirmer'; return; } try { await Cloud.delExam(e.id); await refreshShared(); render(); } catch (er) { x.textContent = 'Erreur'; } }; d.append(t, x); st.append(d); });
+  list.forEach(e => { const d = el('div', 'card arow'); const S = subjectFor(e.subject); const t = el('div', 't'); t.append(el('b', null, examSubjectName(e))); t.append(el('span', 'sub', e.title + ' · ' + frDate(e.exam_date) + (daysUntil(e.exam_date) < 0 ? ' (passé)' : ''))); if (!hasContent(S) && daysUntil(e.exam_date) >= 0) t.append(el('span', 'pill warn', 'Pas de contenu : envoie les cours à Claude')); const x = el('button', 'btn ghost small', 'Supprimer'); let armed = false; x.onclick = async () => { if (!armed) { armed = true; x.textContent = 'Confirmer'; return; } try { await Cloud.delExam(e.id); await refreshShared(); render(); } catch (er) { x.textContent = 'Erreur'; } }; d.append(t, x); st.append(d); });
   m.append(st);
 }
 const GRANT_HINT = 'Si le message parle de « permission denied », exécute le fichier supabase/grants.sql dans Supabase.';
@@ -614,9 +637,9 @@ function calendarImport() {
       const cb = el('input'); cb.type = 'checkbox'; cb.checked = !!e.sel; cb.id = 'ics-' + k; cb.onchange = () => { e.sel = cb.checked; row.classList.toggle('on', cb.checked); };
       const t = el('div', 't'); t.append(el('b', null, e.title || 'Sans titre'));
       t.append(el('span', 'sub', e.start.toLocaleDateString('fr-FR', { weekday:'short', day:'numeric', month:'short' }) + (e.allDay ? '' : ' · ' + e.start.toLocaleTimeString('fr-FR', { hour:'2-digit', minute:'2-digit' })) + (e.loc ? ' · ' + e.loc : '')));
-      const sel = el('select', 'inp small'); sel.id = 'ics-s-' + k; const none = el('option', null, 'Matière ?'); none.value = ''; sel.append(none);
-      SUBJECTS.forEach(S => { const o = el('option', null, S.short); o.value = S.id; if (S.id === e.subject) o.selected = true; sel.append(o); });
-      sel.onchange = () => { e.subject = sel.value; };
+      const sel = el('input', 'inp small'); sel.id = 'ics-s-' + k; sel.setAttribute('list', 'subj-names'); sel.placeholder = 'Matière'; sel.value = e.subjName;
+      sel.oninput = () => { e.subjName = sel.value; hint.textContent = hasContent(subjectFor(sel.value)) ? '' : 'Pas encore de contenu pour cette matière'; };
+      const hint = el('span', 'pill warn', hasContent(subjectFor(e.subjName)) ? '' : 'Pas encore de contenu pour cette matière'); t.append(hint);
       row.append(cb, t, sel); list.append(row);
     });
     add.hidden = false;
@@ -626,23 +649,25 @@ function calendarImport() {
     try { evs = parseICS(await f.text()); } catch (er) { msg.show('Fichier illisible.'); return; }
     if (!evs.length) { msg.show('Aucun événement trouvé : est-ce bien un fichier .ics ?'); return; }
     const known = new Set((device.exams || []).map(x => x.subject + '|' + x.exam_date + '|' + x.title));
-    evs.forEach(e => { const txt = [e.title, e.desc, e.loc].join(' '); e.isExam = EXAM_RE.test(txt); e.subject = guessSubject(txt); e.sel = e.isExam && !!e.subject; e.dup = known.has(e.subject + '|' + ymd(e.start) + '|' + e.title); if (e.dup) e.sel = false; });
+    evs.forEach(e => { const txt = [e.title, e.desc, e.loc].join(' '); e.isExam = EXAM_RE.test(txt); const g = guessSubject(txt); const S = g && SUBJECTS.find(x => x.id === g); e.subjName = S ? S.name : cleanSubject(e.title); e.sel = e.isExam; e.dup = known.has(subjectKey(e.subjName) + '|' + ymd(e.start) + '|' + e.title); if (e.dup) e.sel = false; });
     msg.show(evs.length + ' événements lus, ' + evs.filter(e => e.isExam).length + ' ressemblent à des examens.', true);
     draw();
   };
   allCb.onchange = draw;
   add.onclick = async () => {
     const pick = evs.filter(e => e.sel);
-    if (!pick.length) { msg.show('Coche au moins un examen.'); return; }
-    if (pick.some(e => !e.subject)) { msg.show('Choisis la matière de chaque examen coché.'); return; }
+    if (!pick.length) { msg2.show('Coche au moins un examen.'); return; }
+    if (pick.some(e => !(e.subjName || '').trim())) { msg2.show('Indique la matière de chaque examen coché.'); return; }
     add.disabled = true; let n = 0;
     try {
-      for (const e of pick) { await Cloud.addExam({ subject:e.subject, title:e.title || 'Examen', exam_date:ymd(e.start), details:[e.allDay ? '' : e.start.toLocaleTimeString('fr-FR', { hour:'2-digit', minute:'2-digit' }), e.loc].filter(Boolean).join(' · ') || null }); n++; }
-      await refreshShared(); msg.show(n + ' examen(s) ajouté(s).', true); evs.forEach(e => { if (e.sel) { e.sel = false; e.dup = true; } }); draw();
-    } catch (er) { msg.show(fmtErr(er) + ' ' + GRANT_HINT); }
+      for (const e of pick) { await Cloud.addExam({ subject:subjectKey(e.subjName), title:e.title || 'Examen', exam_date:ymd(e.start), details:[e.allDay ? '' : e.start.toLocaleTimeString('fr-FR', { hour:'2-digit', minute:'2-digit' }), e.loc].filter(Boolean).join(' · ') || null }); n++; }
+      await refreshShared(); msg2.show(n + ' examen(s) ajouté(s) : ils sont sur l\'accueil.', true); evs.forEach(e => { if (e.sel) { e.sel = false; e.dup = true; } }); draw();
+    } catch (er) { msg2.show('Échec : ' + fmtErr(er)); }
     add.disabled = false;
   };
-  box.append(inp, allChk, msg, list, add);
+  const msg2 = msgBox();
+  add.addEventListener('click', () => { msg2.hidden = true; });
+  box.append(subjDatalist(), inp, allChk, msg, list, add, msg2);
   return box;
 }
 function ymd(d) { return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }

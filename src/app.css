@@ -181,3 +181,7 @@ ol.steps{margin:4px 0 0;padding-left:20px} ol.steps li{margin-bottom:6px}
 details.card>summary,details.prevch>summary{cursor:pointer;font-weight:700}
 details.prevch{border:1px solid var(--line);border-radius:12px;padding:10px 12px}
 details.prevch .course{margin-top:8px}
+.pill.warn{background:var(--warn-soft);color:var(--warn);margin-top:6px;align-self:flex-start}
+.pill.warn:empty{display:none}
+.warnbox{background:var(--warn-soft);border-color:transparent;margin-bottom:12px}
+.warnbox b{color:var(--warn)} .warnbox p{margin:0}
