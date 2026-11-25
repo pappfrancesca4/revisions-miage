@@ -558,6 +558,7 @@ function adminExams(m) {
   const msg = msgBox(); const b = el('button', 'btn', 'Ajouter'); b.type = 'submit'; f.append(msg, b);
   f.onsubmit = async ev => { ev.preventDefault(); b.disabled = true; try { await Cloud.addExam({ subject:sel.value, title:title.value.trim(), exam_date:date.value, details:det.value.trim() || null }); await refreshShared(); render(); } catch (e) { msg.show(fmtErr(e)); b.disabled = false; } };
   m.append(f);
+  m.append(calendarImport());
   m.append(el('h3', 'sect', 'Examens enregistrés'));
   const list = (device.exams || []).slice().sort((a, b) => a.exam_date.localeCompare(b.exam_date));
   if (!list.length) m.append(el('p', 'sub', 'Aucun examen.'));
@@ -565,11 +566,103 @@ function adminExams(m) {
   list.forEach(e => { const d = el('div', 'card arow'); const S = SUBJECTS.find(s => s.id === e.subject); const t = el('div', 't'); t.append(el('b', null, e.title + (S ? ' · ' + S.short : ''))); t.append(el('span', 'sub', frDate(e.exam_date) + (daysUntil(e.exam_date) < 0 ? ' (passé)' : ''))); const x = el('button', 'btn ghost small', 'Supprimer'); let armed = false; x.onclick = async () => { if (!armed) { armed = true; x.textContent = 'Confirmer'; return; } try { await Cloud.delExam(e.id); await refreshShared(); render(); } catch (er) { x.textContent = 'Erreur'; } }; d.append(t, x); st.append(d); });
   m.append(st);
 }
+const GRANT_HINT = 'Si le message parle de « permission denied », exécute le fichier supabase/grants.sql dans Supabase.';
+// ----- Import de calendrier (.ics) -----
+const EXAM_RE = /(examen|exam\b|contr[oô]le|partiel|\bds\b|\bcc\b|[ée]valuation|\bqcm\b|\btest\b|soutenance|\boral\b|rattrapage|interro)/i;
+const SUBJ_HINTS = { proba:['proba','probabil','smuage02','statist'], ng:['angular','mean','smuage07','web'], comm:['communication','comm ','business','comm4','prise de parole'] };
+function parseICS(text) {
+  const lines = text.replace(/\r\n?/g, '\n').replace(/\n[ \t]/g, '').split('\n');
+  const evs = []; let cur = null;
+  const unesc = v => v.replace(/\\n/gi, ' ').replace(/\\([,;\\])/g, '$1').trim();
+  lines.forEach(l => {
+    if (l === 'BEGIN:VEVENT') cur = {};
+    else if (l === 'END:VEVENT') { if (cur && cur.start) evs.push(cur); cur = null; }
+    else if (cur) {
+      const i = l.indexOf(':'); if (i < 0) return;
+      const key = l.slice(0, i).split(';')[0].toUpperCase(), val = l.slice(i + 1);
+      if (key === 'SUMMARY') cur.title = unesc(val);
+      else if (key === 'DESCRIPTION') cur.desc = unesc(val);
+      else if (key === 'LOCATION') cur.loc = unesc(val);
+      else if (key === 'DTSTART') {
+        const m = val.match(/^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2}))?(Z)?/);
+        if (m) { let d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +(m[4] || 0), +(m[5] || 0))); if (!m[6]) d = new Date(+m[1], +m[2] - 1, +m[3], +(m[4] || 0), +(m[5] || 0));
+          cur.start = d; cur.allDay = !m[4]; }
+      }
+    }
+  });
+  return evs;
+}
+function guessSubject(txt) {
+  const t = ' ' + norm(txt) + ' '; let best = null, score = 0;
+  SUBJECTS.forEach(S => { const keys = (SUBJ_HINTS[S.id] || []).concat([S.name, S.short, S.code].filter(Boolean).map(x => norm(x).trim())); const sc = keys.filter(k => k && t.includes(norm(k))).length; if (sc > score) { score = sc; best = S.id; } });
+  return best;
+}
+function calendarImport() {
+  const box = el('div', 'card stack'); box.style.marginTop = '12px';
+  box.append(el('b', null, 'Importer un calendrier'));
+  box.append(el('p', 'sub', 'Choisis le fichier .ics de ton emploi du temps (export Google Agenda, Apple Calendrier, ENT…). Les événements qui ressemblent à un examen (examen, contrôle, partiel, DS, QCM, oral…) sont proposés : coche ceux à ajouter.'));
+  const inp = el('input', 'inp'); inp.type = 'file'; inp.accept = '.ics,text/calendar'; inp.id = 'ics-file';
+  const allChk = el('label', 'check'); const allCb = el('input'); allCb.type = 'checkbox'; allCb.id = 'ics-all'; allChk.append(allCb, el('span', null, 'Afficher aussi les événements qui ne ressemblent pas à un examen'));
+  const list = el('div', 'stack'); const msg = msgBox(); const add = el('button', 'btn', 'Ajouter les examens cochés'); add.hidden = true;
+  let evs = [];
+  const draw = () => {
+    list.innerHTML = ''; const now = new Date(); now.setHours(0,0,0,0);
+    const shown = evs.filter(e => e.start >= now && (allCb.checked || e.isExam));
+    if (!shown.length) { list.append(el('p', 'sub', evs.length ? 'Aucun examen à venir trouvé dans ce calendrier.' : '')); add.hidden = true; return; }
+    shown.forEach((e, k) => {
+      const row = el('div', 'icsrow' + (e.sel ? ' on' : ''));
+      const cb = el('input'); cb.type = 'checkbox'; cb.checked = !!e.sel; cb.id = 'ics-' + k; cb.onchange = () => { e.sel = cb.checked; row.classList.toggle('on', cb.checked); };
+      const t = el('div', 't'); t.append(el('b', null, e.title || 'Sans titre'));
+      t.append(el('span', 'sub', e.start.toLocaleDateString('fr-FR', { weekday:'short', day:'numeric', month:'short' }) + (e.allDay ? '' : ' · ' + e.start.toLocaleTimeString('fr-FR', { hour:'2-digit', minute:'2-digit' })) + (e.loc ? ' · ' + e.loc : '')));
+      const sel = el('select', 'inp small'); sel.id = 'ics-s-' + k; const none = el('option', null, 'Matière ?'); none.value = ''; sel.append(none);
+      SUBJECTS.forEach(S => { const o = el('option', null, S.short); o.value = S.id; if (S.id === e.subject) o.selected = true; sel.append(o); });
+      sel.onchange = () => { e.subject = sel.value; };
+      row.append(cb, t, sel); list.append(row);
+    });
+    add.hidden = false;
+  };
+  inp.onchange = async () => {
+    msg.hidden = true; const f = inp.files[0]; if (!f) return;
+    try { evs = parseICS(await f.text()); } catch (er) { msg.show('Fichier illisible.'); return; }
+    if (!evs.length) { msg.show('Aucun événement trouvé : est-ce bien un fichier .ics ?'); return; }
+    const known = new Set((device.exams || []).map(x => x.subject + '|' + x.exam_date + '|' + x.title));
+    evs.forEach(e => { const txt = [e.title, e.desc, e.loc].join(' '); e.isExam = EXAM_RE.test(txt); e.subject = guessSubject(txt); e.sel = e.isExam && !!e.subject; e.dup = known.has(e.subject + '|' + ymd(e.start) + '|' + e.title); if (e.dup) e.sel = false; });
+    msg.show(evs.length + ' événements lus, ' + evs.filter(e => e.isExam).length + ' ressemblent à des examens.', true);
+    draw();
+  };
+  allCb.onchange = draw;
+  add.onclick = async () => {
+    const pick = evs.filter(e => e.sel);
+    if (!pick.length) { msg.show('Coche au moins un examen.'); return; }
+    if (pick.some(e => !e.subject)) { msg.show('Choisis la matière de chaque examen coché.'); return; }
+    add.disabled = true; let n = 0;
+    try {
+      for (const e of pick) { await Cloud.addExam({ subject:e.subject, title:e.title || 'Examen', exam_date:ymd(e.start), details:[e.allDay ? '' : e.start.toLocaleTimeString('fr-FR', { hour:'2-digit', minute:'2-digit' }), e.loc].filter(Boolean).join(' · ') || null }); n++; }
+      await refreshShared(); msg.show(n + ' examen(s) ajouté(s).', true); evs.forEach(e => { if (e.sel) { e.sel = false; e.dup = true; } }); draw();
+    } catch (er) { msg.show(fmtErr(er) + ' ' + GRANT_HINT); }
+    add.disabled = false;
+  };
+  box.append(inp, allChk, msg, list, add);
+  return box;
+}
+function ymd(d) { return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+
+// ----- Générer un cours avec l'IA -----
+let gen = null; // état de la génération en cours
+function loadScript(src) { return new Promise((ok, ko) => { if (document.querySelector('script[data-src="' + src + '"]')) return ok(); const t = document.createElement('script'); t.src = src; t.dataset.src = src; t.onload = ok; t.onerror = () => ko(new Error('Impossible de charger ' + src)); document.head.append(t); }); }
+const b64 = buf => { let s = ''; const a = new Uint8Array(buf); for (let i = 0; i < a.length; i += 0x8000) s += String.fromCharCode.apply(null, a.subarray(i, i + 0x8000)); return btoa(s); };
+async function readSource(f) {
+  const name = f.name, ext = name.split('.').pop().toLowerCase();
+  if (ext === 'docx') { await loadScript('vendor/mammoth.browser.min.js'); const r = await window.mammoth.extractRawText({ arrayBuffer: await f.arrayBuffer() }); return { type:'text', name, text:r.value }; }
+  if (ext === 'pdf') { if (f.size > 20e6) throw new Error(name + ' dépasse 20 Mo : exporte-le en plus petit ou découpe-le.'); return { type:'pdf', name, data:b64(await f.arrayBuffer()) }; }
+  if (/^(png|jpe?g|gif|webp)$/.test(ext)) { if (f.size > 5e6) throw new Error(name + ' : image trop lourde (5 Mo max).'); return { type:'image', name, media_type: ext === 'jpg' ? 'image/jpeg' : 'image/' + ext, data:b64(await f.arrayBuffer()) }; }
+  if (/^(txt|md|csv|html?)$/.test(ext)) return { type:'text', name, text: await f.text() };
+  throw new Error(name + ' : format non pris en charge (Word .docx, PDF, images, texte). Pour un PowerPoint, exporte-le en PDF.');
+}
 async function adminContent(m) {
-  const how = el('div', 'card stack');
-  how.innerHTML = '<b>Ajouter un cours</b><ol class="steps"><li>Envoie tes fichiers de cours (Word, PDF, photos) et tes QCM à Claude dans ta conversation de révision.</li><li>Claude te renvoie un fichier <b>pack .json</b> avec les résumés, les explications et les questions.</li><li>Importe ce fichier ici : le contenu apparaît dans l\'app de toute la classe, même hors ligne une fois chargé.</li></ol>';
-  m.append(how);
-  const f = el('div', 'card stack');
+  m.append(genPanel());
+  const det = el('details', 'card'); const sm = el('summary', null, 'Importer un pack .json (avancé)'); det.append(sm);
+  const f = el('div', 'stack'); f.style.marginTop = '10px';
   const lab = el('label', 'lbl', 'Fichier pack (.json)'); const inp = el('input', 'inp'); inp.type = 'file'; inp.accept = '.json,application/json'; inp.id = 'pack-file'; lab.htmlFor = 'pack-file';
   const prev = el('div'); const msg = msgBox(); const pub = el('button', 'btn', 'Publier pour la classe'); pub.disabled = true;
   let pack = null;
@@ -579,18 +672,18 @@ async function adminContent(m) {
     try { pack = JSON.parse(await file.text()); } catch (e) { msg.show('Ce fichier n\'est pas un JSON valide.'); return; }
     const v = Packs.validate(pack);
     if (!v.ok) { msg.show('Pack refusé : ' + v.errors.join(' · ')); pack = null; return; }
-    const s = v.summary; prev.append(el('p', 'formmsg good', s.subject + ' : ' + s.chapters + ' chapitres, ' + s.questions + ' questions (' + s.counts.qcm + ' QCM, ' + s.counts.list + ' « Citez », ' + s.counts.open + ' ouvertes).'));
+    const s = v.summary; prev.append(el('p', 'formmsg good', s.subject + ' : ' + s.chapters + ' chapitres, ' + s.questions + ' questions.'));
     pub.disabled = false;
   };
-  pub.onclick = async () => { if (!pack) return; pub.disabled = true; pub.textContent = 'Publication…'; try { await Cloud.addPack({ subject:pack.subject.id, title:pack.title || pack.subject.name, content:pack, active:true }); msg.show('Publié. L\'app va se recharger.', true); setTimeout(refreshShared, 600); } catch (e) { msg.show(fmtErr(e)); pub.disabled = false; pub.textContent = 'Publier pour la classe'; } };
-  f.append(lab, inp, prev, msg, pub);
-  m.append(f);
-  m.append(el('h3', 'sect', 'Packs publiés'));
+  pub.onclick = () => publishPack(pack, pub, msg);
+  f.append(lab, inp, prev, msg, pub); det.append(f); det.style.marginTop = '12px';
+  m.append(det);
+  m.append(el('h3', 'sect', 'Contenu publié'));
   const holder = el('div', 'stack'); holder.append(el('p', 'sub', 'Chargement…')); m.append(holder);
   const all = await Cloud.packs(true);
   holder.innerHTML = '';
-  if (!all) { holder.append(el('p', 'sub', 'Impossible de charger la liste (connexion ?).')); return; }
-  if (!all.length) holder.append(el('p', 'sub', 'Aucun pack publié. Les matières de base (Proba, Angular, Comm) sont intégrées à l\'app.'));
+  if (!all) { holder.append(el('p', 'formmsg bad', 'Impossible de charger la liste : ' + (Cloud.lastError() || 'pas de connexion') + '. ' + GRANT_HINT)); return; }
+  if (!all.length) holder.append(el('p', 'sub', 'Rien de publié pour l\'instant. Proba, Angular et Comm sont intégrés à l\'app.'));
   all.forEach(p => {
     const d = el('div', 'card arow'); const t = el('div', 't'); t.append(el('b', null, p.title || p.subject)); const c = p.content || {}; t.append(el('span', 'sub', (c.chapters || []).length + ' chapitres · ' + (c.questions || []).length + ' questions · ' + (p.active ? 'visible' : 'masqué')));
     const tg = el('button', 'btn ghost small', p.active ? 'Masquer' : 'Afficher'); tg.onclick = async () => { await Cloud.setPackActive(p.id, !p.active); refreshShared(); render(); };
@@ -598,10 +691,124 @@ async function adminContent(m) {
     const btns = el('div', 'btnrow'); btns.append(tg, x); d.append(t, btns); holder.append(d);
   });
 }
+async function publishPack(pack, btn, msg) {
+  if (!pack) return; btn.disabled = true; const old = btn.textContent; btn.textContent = 'Publication…';
+  try { await Cloud.addPack({ subject:pack.subject.id, title:pack.title || pack.subject.name, content:pack, active:true }); msg.show('Publié pour toute la classe. L\'app va se recharger.', true); gen = null; setTimeout(refreshShared, 800); }
+  catch (e) { msg.show(fmtErr(e) + ' ' + GRANT_HINT); btn.disabled = false; btn.textContent = old; }
+}
+function genPanel() {
+  const box = el('div', 'card stack');
+  box.append(el('b', null, 'Ajouter un cours (généré par l\'IA)'));
+  if (gen && gen.step !== 'form') return genProgress(box);
+  box.append(el('p', 'sub', 'Dépose tes cours et les QCM du prof : l\'app crée le plan, les explications simples, les fiches et les questions, puis tu publies pour la classe.'));
+  const st = gen || (gen = { step:'form', subject:'new', name:'', short:'', code:'', style:'mix', count:15, notes:'', files:[] });
+  const w = (label, node) => { const d = el('div'); const l = el('label', 'lbl', label); l.htmlFor = node.id; d.append(l, node); box.append(d); return node; };
+  const sel = el('select', 'inp'); sel.id = 'g-subject'; const nw = el('option', null, '+ Nouvelle matière'); nw.value = 'new'; sel.append(nw);
+  SUBJECTS.forEach(S => { const o = el('option', null, 'Compléter : ' + S.name); o.value = S.id; sel.append(o); }); sel.value = st.subject;
+  w('Matière', sel);
+  const newBox = el('div', 'stack');
+  const nm = el('input', 'inp'); nm.id = 'g-name'; nm.placeholder = 'Ex. : Gestion de projet'; nm.value = st.name; nm.oninput = () => st.name = nm.value;
+  const sh = el('input', 'inp'); sh.id = 'g-short'; sh.placeholder = 'Nom court (ex. : Projet)'; sh.value = st.short; sh.oninput = () => st.short = sh.value;
+  const cd = el('input', 'inp'); cd.id = 'g-code'; cd.placeholder = 'Code UE (facultatif)'; cd.value = st.code; cd.oninput = () => st.code = cd.value;
+  [['Nom de la matière', nm], ['Nom court', sh], ['Code', cd]].forEach(([l, n]) => { const d = el('div'); const lb = el('label', 'lbl', l); lb.htmlFor = n.id; d.append(lb, n); newBox.append(d); });
+  newBox.hidden = st.subject !== 'new'; box.append(newBox);
+  sel.onchange = () => { st.subject = sel.value; newBox.hidden = sel.value !== 'new'; };
+  const sty = el('select', 'inp'); sty.id = 'g-style'; [['mix', 'Mélange (QCM + « Citez… » + ouvertes)'], ['qcm', 'Surtout des QCM'], ['list', 'Surtout « Citez N… »']].forEach(([v, t]) => { const o = el('option', null, t); o.value = v; sty.append(o); }); sty.value = st.style; sty.onchange = () => st.style = sty.value;
+  w('Type de questions du contrôle', sty);
+  const cnt = el('select', 'inp'); cnt.id = 'g-count'; [10, 15, 20, 30].forEach(n => { const o = el('option', null, n + ' questions par chapitre'); o.value = n; cnt.append(o); }); cnt.value = st.count; cnt.onchange = () => st.count = +cnt.value;
+  w('Nombre de questions', cnt);
+  const nt = el('textarea', 'answer'); nt.id = 'g-notes'; nt.rows = 2; nt.placeholder = 'Consignes (facultatif) : ex. « le 2e contrôle commence au chapitre sur le communiqué de presse »'; nt.value = st.notes; nt.oninput = () => st.notes = nt.value;
+  w('Consignes', nt);
+  const files = el('input', 'inp'); files.id = 'g-files'; files.type = 'file'; files.multiple = true; files.accept = '.docx,.pdf,.txt,.md,.png,.jpg,.jpeg,.webp,.gif';
+  w('Fichiers du cours et QCM du prof (Word, PDF, captures)', files);
+  const msg = msgBox(); box.append(msg);
+  const go1 = el('button', 'btn', 'Analyser le cours');
+  go1.onclick = async () => {
+    msg.hidden = true;
+    if (!files.files.length) return msg.show('Ajoute au moins un fichier.');
+    if (st.subject === 'new' && !st.name.trim()) return msg.show('Donne un nom à la matière.');
+    go1.disabled = true; go1.textContent = 'Lecture des fichiers…';
+    try {
+      st.sources = []; for (const f of files.files) st.sources.push(await readSource(f));
+      const size = JSON.stringify(st.sources).length; if (size > 25e6) throw new Error('Fichiers trop lourds au total (25 Mo max). Envoie-les en plusieurs fois.');
+      st.subjectObj = st.subject === 'new'
+        ? { id: (norm(st.short || st.name).trim().replace(/\s+/g, '-').slice(0, 20) || 'matiere') + '-' + Date.now().toString(36).slice(-3), name: st.name.trim(), short: (st.short || st.name).trim().slice(0, 12), code: st.code.trim(), color: ['#b45309','#7c3aed','#0369a1','#be185d','#4d7c0f'][Math.floor(Math.random() * 5)] }
+        : (S => ({ id:S.id, name:S.name, short:S.short, code:S.code }))(SUBJECTS.find(x => x.id === st.subject));
+      go1.textContent = 'L\'IA lit le cours… (jusqu\'à 1 minute)';
+      const r = await Cloud.generate({ mode:'outline', subject:st.subjectObj, sources:st.sources, notes:st.notes, style:st.style });
+      st.outline = (r.chapters || []).map((c, i) => Object.assign({ on:true, id:'ch' + (i + 1) }, c));
+      if (!st.outline.length) throw new Error('L\'IA n\'a proposé aucun chapitre.');
+      st.step = 'outline'; render();
+    } catch (e) { msg.show(fmtErr(e)); go1.disabled = false; go1.textContent = 'Analyser le cours'; }
+  };
+  box.append(go1);
+  box.append(el('p', 'sub', 'Coût : la génération utilise ta clé d\'API Claude (facturée à l\'usage, généralement quelques dizaines de centimes à quelques euros par cours selon sa longueur).'));
+  return box;
+}
+function genProgress(box) {
+  const st = gen;
+  if (st.step === 'outline') {
+    box.append(el('p', 'sub', 'Plan proposé pour « ' + st.subjectObj.name + ' ». Décoche les chapitres inutiles, puis lance la rédaction.'));
+    st.outline.forEach((c, i) => { const lab = el('label', 'check' + (c.on ? ' on' : '')); const cb = el('input'); cb.type = 'checkbox'; cb.checked = c.on; cb.id = 'oc-' + i; cb.onchange = () => { c.on = cb.checked; lab.classList.toggle('on', cb.checked); }; const t = el('span'); t.append(el('b', null, (i + 1) + '. ' + c.title)); t.append(el('span', 'sub block', c.sub)); lab.append(cb, t); box.append(lab); });
+    const msg = msgBox(); box.append(msg);
+    const go2 = el('button', 'btn', 'Rédiger les chapitres');
+    go2.onclick = () => { if (!st.outline.some(c => c.on)) return msg.show('Garde au moins un chapitre.'); st.step = 'writing'; st.done = []; st.idx = 0; st.err = null; render(); runGeneration(); };
+    const cancel = el('button', 'btn ghost', 'Annuler'); cancel.onclick = () => { gen = null; render(); };
+    box.append(go2, cancel); return box;
+  }
+  const chs = st.outline.filter(c => c.on);
+  if (st.step === 'writing') {
+    const pr = el('div', 'prog'); const pi = el('i'); pi.style.width = (100 * st.done.length / chs.length) + '%'; pr.append(pi); box.append(pr);
+    box.append(el('p', null, st.err ? 'Arrêt au chapitre ' + (st.done.length + 1) + '.' : 'Rédaction du chapitre ' + Math.min(st.done.length + 1, chs.length) + ' / ' + chs.length + ' : ' + ((chs[st.done.length] || {}).title || '') + (st.phase ? ' (' + st.phase + ')' : '') + '…'));
+    box.append(el('p', 'sub', 'Garde cette page ouverte. Chaque chapitre prend environ 1 à 2 minutes.'));
+    if (st.err) { box.append(el('p', 'formmsg bad', st.err)); const r = el('button', 'btn', 'Réessayer ce chapitre'); r.onclick = () => { st.err = null; render(); runGeneration(); }; box.append(r); }
+    const cancel = el('button', 'btn ghost', 'Annuler'); cancel.onclick = () => { gen = null; render(); }; box.append(cancel);
+    return box;
+  }
+  if (st.step === 'review') {
+    const v = Packs.validate(st.pack);
+    box.append(el('p', 'formmsg ' + (v.ok ? 'good' : 'bad'), v.ok ? 'Prêt : ' + v.summary.chapters + ' chapitres, ' + v.summary.questions + ' questions (' + v.summary.counts.qcm + ' QCM, ' + v.summary.counts.list + ' « Citez », ' + v.summary.counts.open + ' ouvertes).' : 'Problème : ' + v.errors.join(' · ')));
+    st.pack.chapters.forEach(c => { const d = el('details', 'prevch'); d.append(el('summary', null, c.title)); const b = el('div', 'course'); b.innerHTML = Packs.clean(c.simple); d.append(b); box.append(d); });
+    const msg = msgBox(); box.append(msg);
+    const pub = el('button', 'btn', 'Publier pour la classe'); pub.disabled = !v.ok; pub.onclick = () => publishPack(st.pack, pub, msg);
+    const cancel = el('button', 'btn ghost', 'Abandonner'); cancel.onclick = () => { gen = null; render(); };
+    box.append(pub, cancel); return box;
+  }
+  return box;
+}
+async function runGeneration() {
+  const st = gen; const chs = st.outline.filter(c => c.on);
+  while (gen === st && st.done.length < chs.length) {
+    const c = chs[st.done.length];
+    const base = { subject:st.subjectObj, sources:st.sources, outline:chs, chapter:c, style:st.style, count:st.count, notes:st.notes };
+    try {
+      st.phase = 'cours'; if (view.name === 'admin') render();
+      const a = st.partial && st.partial.id === c.id ? st.partial : Object.assign({ id:c.id }, await Cloud.generate(Object.assign({ mode:'content' }, base)));
+      st.partial = a; st.phase = 'questions'; if (view.name === 'admin') render();
+      const q = await Cloud.generate(Object.assign({ mode:'questions' }, base));
+      st.done.push({ chapter:{ id:c.id, title:c.title, sub:c.sub, simple:a.simple, html:a.html }, questions:(q.questions || []).map(x => Object.assign({}, x, { chapter:c.id })) });
+      st.partial = null; st.phase = null;
+    } catch (e) { st.err = fmtErr(e); if (view.name === 'admin') render(); return; }
+  }
+  if (gen !== st) return;
+  // nettoyage des questions renvoyées par l'IA
+  const qs = [];
+  st.done.forEach(d => d.questions.forEach(q => {
+    const t = q.type; const o = { type:t, chapter:q.chapter, q:q.q };
+    if (t === 'qcm' && Array.isArray(q.options) && q.options.length >= 2) { o.options = q.options; o.answer = Math.max(0, Math.min(q.options.length - 1, parseInt(q.answer, 10) || 0)); o.explanation = q.explanation || ''; if (Array.isArray(q.notes) && q.notes.length === q.options.length) o.notes = q.notes; }
+    else if (t === 'list' && Array.isArray(q.items) && q.items.length) { o.items = q.items; o.need = Math.max(1, Math.min(q.items.length, parseInt(q.need, 10) || q.items.length)); o.tip = q.tip || ''; }
+    else if (t === 'open' && q.answer) { o.answer = String(q.answer); o.tip = q.tip || ''; }
+    else return;
+    if (q.source) o.source = String(q.source);
+    qs.push(o);
+  }));
+  st.pack = { format:'revisions-pack-1', title:st.subjectObj.name + (st.subject === 'new' ? '' : ' (ajout)'), subject:st.subjectObj, chapters:st.done.map(d => d.chapter), questions:qs };
+  st.step = 'review'; if (view.name === 'admin') render();
+}
 async function adminMembers(m) {
   const holder = el('div', 'stack'); holder.append(el('p', 'sub', 'Chargement…')); m.append(holder);
   const data = await Cloud.members(); holder.innerHTML = '';
-  if (!data) { holder.append(el('p', 'sub', 'Impossible de charger les membres (connexion ?).')); return; }
+  if (!data) { holder.append(el('p', 'formmsg bad', 'Impossible de charger les membres : ' + (Cloud.lastError() || 'pas de connexion') + '. ' + GRANT_HINT)); return; }
   holder.append(el('p', 'sub', data.profiles.length + ' membre(s) inscrit(s).'));
   data.profiles.forEach(pf => {
     const mine = data.progress.filter(r => r.user_id === pf.id); const okN = mine.filter(r => r.last === true).length;

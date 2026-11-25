@@ -100,6 +100,16 @@ create policy "packs_select" on public.packs for select to anon, authenticated u
 drop policy if exists "packs_admin" on public.packs;
 create policy "packs_admin" on public.packs for all to authenticated using (public.is_admin()) with check (public.is_admin());
 
+-- ---------- Droits d'accès pour l'app ----------
+grant usage on schema public to anon, authenticated;
+grant select on public.exams, public.packs to anon;
+grant select, insert, update, delete on public.exams, public.packs to authenticated;
+grant select, update on public.profiles to authenticated;
+grant select on public.admins to authenticated;
+grant select, insert, update on public.progress to authenticated;
+grant usage, select on all sequences in schema public to authenticated;
+notify pgrst, 'reload schema';
+
 -- ============================================================
 -- APRÈS avoir créé TON compte dans l'app, exécute cette ligne
 -- (remplace l'adresse par la tienne) pour devenir administratrice :

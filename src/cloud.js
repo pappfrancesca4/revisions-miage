@@ -3,7 +3,7 @@
 window.Cloud = (function(){
   const cfg = window.SUPA || {};
   const enabled = !!(cfg.url && cfg.key && window.supabase && !/claude|claudeusercontent/.test(location.hostname));
-  let sb = null;
+  let sb = null, lastError = null;
   if (enabled) {
     try { sb = window.supabase.createClient(cfg.url, cfg.key, { auth: { persistSession: true, autoRefreshToken: true, storageKey: 'revisions-auth' } }); }
     catch (e) { sb = null; }
@@ -46,14 +46,27 @@ window.Cloud = (function(){
   }
   async function exams() {
     const r = await wrap(() => sb.from('exams').select('*').order('exam_date', { ascending: true }));
+    lastError = r.error ? (r.error.message || String(r.error)) : null;
     return r.error ? null : r.data;
   }
   async function addExam(e) { const r = await sb.from('exams').insert(e); if (r.error) throw r.error; }
+  async function generate(body) {
+    const r = await sb.functions.invoke('generate-pack', { body });
+    if (r.error) {
+      let msg = r.error.message;
+      try { const j = await r.error.context.json(); if (j && j.error) msg = j.error; } catch (e) {}
+      if (/Failed to send|not found|404/i.test(msg)) msg = 'La fonction « generate-pack » n\'est pas encore installée dans Supabase (voir les étapes).';
+      throw new Error(msg);
+    }
+    if (r.data && r.data.error) throw new Error(r.data.error);
+    return r.data;
+  }
   async function delExam(id) { const r = await sb.from('exams').delete().eq('id', id); if (r.error) throw r.error; }
   async function packs(all) {
     let q = sb.from('packs').select('id, subject, title, content, active, created_at').order('id');
     if (!all) q = q.eq('active', true);
     const r = await wrap(() => q);
+    lastError = r.error ? (r.error.message || String(r.error)) : null;
     return r.error ? null : r.data;
   }
   async function addPack(p) { const r = await sb.from('packs').insert(p); if (r.error) throw r.error; }
@@ -62,9 +75,10 @@ window.Cloud = (function(){
   async function members() {
     const p = await wrap(() => sb.from('profiles').select('id, display_name, created_at'));
     const g = await wrap(() => sb.from('progress').select('user_id, qid, last, updated_at'));
+    lastError = (p.error || g.error) ? ((p.error || g.error).message || String(p.error || g.error)) : null;
     if (p.error || g.error) return null;
     return { profiles: p.data || [], progress: g.data || [] };
   }
   function onAuth(cb) { if (ok()) sb.auth.onAuthStateChange((ev, s) => cb(ev, s)); }
-  return { enabled: ok, online, session, signUp, signIn, signOut, profile, pullProgress, pushProgress, exams, addExam, delExam, packs, addPack, setPackActive, delPack, members, onAuth };
+  return { lastError: () => lastError, generate, enabled: ok, online, session, signUp, signIn, signOut, profile, pullProgress, pushProgress, exams, addExam, delExam, packs, addPack, setPackActive, delPack, members, onAuth };
 })();

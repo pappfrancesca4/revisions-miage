@@ -171,3 +171,13 @@ select.inp{appearance:auto}
 .btn.small{width:auto;padding:8px 12px;font-size:14px}
 .btnrow{display:flex;gap:8px}
 ol.steps{margin:4px 0 0;padding-left:20px} ol.steps li{margin-bottom:6px}
+.icsrow{display:flex;align-items:center;gap:10px;border:2px solid var(--line);border-radius:12px;padding:10px 12px;flex-wrap:wrap}
+.icsrow.on{border-color:var(--ok);background:var(--ok-soft)}
+.icsrow input[type=checkbox]{width:22px;height:22px;flex:none;accent-color:var(--ok)}
+.icsrow .t{flex:1;min-width:150px;display:flex;flex-direction:column}
+.icsrow .t .sub{margin:2px 0 0}
+.inp.small{width:auto;min-width:110px;padding:8px 10px;font-size:15px}
+.sub.block{display:block;margin:2px 0 0}
+details.card>summary,details.prevch>summary{cursor:pointer;font-weight:700}
+details.prevch{border:1px solid var(--line);border-radius:12px;padding:10px 12px}
+details.prevch .course{margin-top:8px}

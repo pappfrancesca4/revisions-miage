@@ -19,7 +19,7 @@ head = '''<!doctype html><html lang="fr"><head><meta charset="utf-8">
 pwa = os.path.join(out,'pwa'); os.makedirs(pwa, exist_ok=True)
 import shutil
 os.makedirs(os.path.join(pwa,'vendor'), exist_ok=True)
-shutil.copy(os.path.join(src,'vendor','supabase.js'), os.path.join(pwa,'vendor','supabase.js'))
+for vf in os.listdir(os.path.join(src,'vendor')): shutil.copy(os.path.join(src,'vendor',vf), os.path.join(pwa,'vendor',vf))
 pbody = body.replace('<meta name="claude:viewport-fit-sides" content="cover">','').replace('<script>', '<script src="vendor/supabase.js"></script>\n<script>', 1)
 open(os.path.join(pwa,'index.html'),'w').write(head + pbody + '</body></html>')
 print(len(body))
