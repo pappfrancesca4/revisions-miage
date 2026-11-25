@@ -27,6 +27,15 @@ window.Cloud = (function(){
     if (r.error) throw r.error;
     return r.data;
   }
+  async function resetPassword(email) {
+    const r = await sb.auth.resetPasswordForEmail(email, { redirectTo: location.origin + location.pathname });
+    if (r.error) throw r.error;
+  }
+  async function updatePassword(password) {
+    const r = await sb.auth.updateUser({ password });
+    if (r.error) throw r.error;
+    return r.data;
+  }
   async function signOut() { if (ok()) await wrap(() => sb.auth.signOut()); }
 
   async function profile(uid) {
@@ -69,5 +78,5 @@ window.Cloud = (function(){
     return { profiles: p.data || [], progress: g.data || [] };
   }
   function onAuth(cb) { if (ok()) sb.auth.onAuthStateChange((ev, s) => cb(ev, s)); }
-  return { lastError: () => lastError, enabled: ok, online, session, signUp, signIn, signOut, profile, pullProgress, pushProgress, exams, addExam, delExam, packs, addPack, setPackActive, delPack, members, onAuth };
+  return { lastError: () => lastError, resetPassword, updatePassword, enabled: ok, online, session, signUp, signIn, signOut, profile, pullProgress, pushProgress, exams, addExam, delExam, packs, addPack, setPackActive, delPack, members, onAuth };
 })();

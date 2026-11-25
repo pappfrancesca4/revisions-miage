@@ -493,6 +493,7 @@ async function setUserFromSession(s) {
 function vAuth(m) {
   setTop('Révisions', false);
   const mode = view.mode || 'login';
+  if (mode === 'forgot' || mode === 'newpass') return vPassword(m, mode);
   const c = el('div', 'card stack authcard');
   c.append(el('h2', null, mode === 'login' ? 'Connexion' : 'Créer un compte'));
   c.append(el('p', 'sub', 'Ton compte garde ta progression et la synchronise entre ton téléphone et ton ordinateur.'));
@@ -516,6 +517,7 @@ function vAuth(m) {
     } catch (e) { msg.className = 'formmsg bad'; msg.textContent = fmtErr(e); msg.hidden = false; sub.disabled = false; sub.textContent = mode === 'login' ? 'Se connecter' : 'Créer mon compte'; }
   };
   c.append(f);
+  if (mode === 'login') { const fg = el('button', 'link', 'Mot de passe oublié ?'); fg.onclick = () => { view.mode = 'forgot'; render(); }; c.append(fg); }
   const sw = el('button', 'link', mode === 'login' ? 'Pas encore de compte ? Créer un compte' : 'Déjà un compte ? Se connecter');
   sw.onclick = () => { view.mode = mode === 'login' ? 'signup' : 'login'; render(); };
   c.append(sw);
@@ -524,6 +526,28 @@ function vAuth(m) {
   g.onclick = () => { device.guest = true; saveDevice(); history = []; go({ name:'home' }, false); };
   m.append(g);
   m.append(el('p', 'sub center', 'Sans compte, ta progression reste seulement sur cet appareil.'));
+}
+function vPassword(m, mode) {
+  const c = el('div', 'card stack authcard');
+  c.append(el('h2', null, mode === 'forgot' ? 'Mot de passe oublié' : 'Nouveau mot de passe'));
+  c.append(el('p', 'sub', mode === 'forgot' ? 'Entre ton e-mail : tu vas recevoir un lien pour choisir un nouveau mot de passe.' : 'Choisis ton nouveau mot de passe (6 caractères minimum).'));
+  const f = el('form', 'stack');
+  const i = el('input', 'inp'); i.id = mode === 'forgot' ? 'fg-email' : 'np-pass'; i.type = mode === 'forgot' ? 'email' : 'password'; i.autocomplete = mode === 'forgot' ? 'email' : 'new-password'; i.required = true;
+  const l = el('label', 'lbl', mode === 'forgot' ? 'E-mail' : 'Nouveau mot de passe'); l.htmlFor = i.id;
+  const msg = el('p', 'formmsg'); msg.hidden = true;
+  const btn = el('button', 'btn', mode === 'forgot' ? 'Envoyer le lien' : 'Enregistrer'); btn.type = 'submit';
+  f.append(l, i, msg, btn);
+  f.onsubmit = async ev => {
+    ev.preventDefault(); msg.hidden = true; btn.disabled = true;
+    try {
+      if (mode === 'forgot') { await Cloud.resetPassword(i.value.trim()); msg.className = 'formmsg good'; msg.textContent = 'E-mail envoyé. Ouvre le lien qu\'il contient (regarde aussi les spams).'; msg.hidden = false; }
+      else { await Cloud.updatePassword(i.value); const s = await Cloud.session(); if (s) await setUserFromSession(s); history = []; go({ name:'home' }, false); return; }
+    } catch (e) { msg.className = 'formmsg bad'; msg.textContent = fmtErr(e); msg.hidden = false; }
+    btn.disabled = false;
+  };
+  c.append(f);
+  const back = el('button', 'link', 'Retour à la connexion'); back.onclick = () => { view.mode = 'login'; render(); }; c.append(back);
+  m.append(c);
 }
 function vAccount(m) {
   setTop('Mon compte', false);
@@ -728,12 +752,14 @@ $('#back').onclick = back;
 $('#subjchip').onclick = () => { history = []; go({ name:'home' }, false); };
 document.querySelectorAll('.tabs button').forEach(b => { b.querySelector('i').outerHTML = ICON[b.dataset.icon]; b.onclick = () => { history = []; go({ name:b.dataset.v }, false); }; });
 (device.packs || []).forEach(p => { try { Packs.apply(p); } catch(e) {} });
-view = { name: (Cloud.enabled() && !device.user && !device.guest) ? 'auth' : 'home' };
+const recovering = /type=recovery/.test(location.hash);
+view = recovering ? { name:'auth', mode:'newpass' } : { name: (Cloud.enabled() && !device.user && !device.guest) ? 'auth' : 'home' };
+Cloud.onAuth(ev => { if (ev === 'PASSWORD_RECOVERY') { history = []; view = { name:'auth', mode:'newpass' }; render(); } });
 render();
 (async () => {
   if (!Cloud.enabled()) return;
   const s = await Cloud.session();
-  if (s) { await setUserFromSession(s); if (view.name === 'auth') { history = []; view = { name:'home' }; } render(); }
+  if (s) { await setUserFromSession(s); if (view.name === 'auth' && view.mode !== 'newpass') { history = []; view = { name:'home' }; } render(); }
   refreshShared();
 })();
 window.addEventListener('online', () => { sync(); refreshShared(); });
